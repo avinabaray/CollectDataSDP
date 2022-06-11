@@ -11,7 +11,9 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.os.Bundle;
+import android.os.CountDownTimer;
 import android.os.Environment;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
@@ -22,20 +24,21 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
+import java.util.ArrayList;
+import java.util.List;
 
 
 public class MainActivity extends AppCompatActivity implements SensorEventListener {
 
+    private final int totalTimeInSeconds = 15;
 
     private TextView accText, gyroText, accValueText, gyroValueText, remText;
     private Button startBtn, pauseBtn, resumeBtn;
     private SensorManager sensorManager;
 
     private Sensor accelerometerSensor, gyroscopeSensor;
-    private float[] lastAccData = new float[]{Integer.MAX_VALUE, 0.0f, 0.0f};
-    private long lastAccTime;
-    private float[] lastGyroData = new float[]{Integer.MAX_VALUE, 0.0f, 0.0f};
-    private long lastGyroTime;
+    private SensorData lastAccData = null;
+    private SensorData lastGyroData = null;
 
     private boolean collectData = false;
     private Activity mActivity;
@@ -48,10 +51,10 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         mActivity = this;
 
         initViews();
-        initSensors();
+        initSensors(false);
     }
 
-    private void initSensors() {
+    private void initSensors(boolean registerListeners) {
         sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
 
         if (checkSensorAvailability(Sensor.TYPE_ACCELEROMETER)) {
@@ -72,8 +75,10 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
             gyroText.setText("FALSE");
         }
 
-        sensorManager.registerListener(this, accelerometerSensor, SensorManager.SENSOR_DELAY_FASTEST);
-        sensorManager.registerListener(this, gyroscopeSensor, SensorManager.SENSOR_DELAY_FASTEST);
+        if (registerListeners) {
+            sensorManager.registerListener(this, accelerometerSensor, SensorManager.SENSOR_DELAY_NORMAL);
+            sensorManager.registerListener(this, gyroscopeSensor, SensorManager.SENSOR_DELAY_NORMAL);
+        }
     }
 
     private void initViews() {
@@ -86,6 +91,8 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         resumeBtn = findViewById(R.id.resumeBtn);
         remText = findViewById(R.id.remText);
 
+        remText.setText("0/" + totalTimeInSeconds);
+
 //        startBtn.setVisibility(View.VISIBLE);
 //        pauseBtn.setVisibility(View.GONE);
 //        resumeBtn.setVisibility(View.GONE);
@@ -97,6 +104,25 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
             public void onClick(View v) {
                 collectData = true;
                 setBtnVis(false, false, true);
+                initSensors(true);
+
+                int[] counter = {0};
+                CountDownTimer countDownTimer = new CountDownTimer(totalTimeInSeconds * 1000L, 1000) {
+                    @Override
+                    public void onTick(long millisUntilFinished) {
+                        remText.setText("" + ++counter[0] + "/" + totalTimeInSeconds);
+                    }
+
+                    @Override
+                    public void onFinish() {
+                        collectData = false;
+                        generateCSV();
+                        sensorManager.unregisterListener(MainActivity.this);
+                    }
+                };
+
+                countDownTimer.start();
+
             }
         });
 
@@ -116,10 +142,13 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
             }
         });
 
-
     }
 
     private void setBtnVis(boolean start, boolean resume, boolean pause) {
+        // TODO Resume and Pause disabled
+        resume = false;
+        pause = false;
+
         if (start) {
             startBtn.setVisibility(View.VISIBLE);
         } else {
@@ -150,30 +179,31 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
         return isSensor;
     }
 
+    List<SensorData> accData = new ArrayList<>();
+    List<SensorData> gyroData = new ArrayList<>();
+
     @Override
     public void onSensorChanged(SensorEvent event) {
         switch (event.sensor.getType()) {
             case Sensor.TYPE_ACCELEROMETER:
 
-                lastAccData[0] = modulateAccData(event.values[0]);
-                lastAccData[1] = modulateAccData(event.values[1]);
-                lastAccData[2] = modulateAccData(event.values[2]);
-
-                lastAccTime = event.timestamp;
-//                newDataReceived();
-
+                lastAccData = new SensorData(
+                        System.currentTimeMillis() - SystemClock.elapsedRealtime() + (event.timestamp / 1000000L),
+                        event.values[0],
+                        event.values[1],
+                        event.values[2]
+                );
                 break;
+
             case Sensor.TYPE_GYROSCOPE:
 
-                lastGyroData[0] = modulateGyroData(event.values[0]);
-                lastGyroData[1] = modulateGyroData(event.values[1]);
-                lastGyroData[2] = modulateGyroData(event.values[2]);
-
-                lastGyroTime = event.timestamp;
-//                newDataReceived();
-
+                lastGyroData = new SensorData(
+                        System.currentTimeMillis() - SystemClock.elapsedRealtime() + (event.timestamp / 1000000L),
+                        event.values[0],
+                        event.values[1],
+                        event.values[2]
+                );
                 break;
-
         }
 
         if (collectData)
@@ -185,173 +215,65 @@ public class MainActivity extends AppCompatActivity implements SensorEventListen
 
     }
 
-    private float modulateAccData(float rawData) {
-
-        float temp = (int) (255 * (rawData + 16)) / 32.0f;
-        float ans = (float) (temp / 127.5) - 1;
-
-        return temp;
-    }
-
-    private float modulateGyroData(float rawData) {
-
-        float temp = (255 * (rawData + 34)) / 68.0f;
-        float ans = (float) (temp / 127.5) - 1;
-
-        return temp;
-    }
-
-    private float[][][][] data = new float[1][20][20][3];
-    private int x = 0;
-    private int y = 0;
-
     private void newDataReceived() {
-        Log.w("DATA", "A: " + lastAccTime + ", G: " + lastGyroTime + ", Diff: " + (lastAccTime - lastGyroTime));
-        if (lastAccData[0] != Integer.MAX_VALUE && lastGyroData[0] != Integer.MAX_VALUE) {
-            if (Math.abs(lastAccTime - lastGyroTime) < 6000000) {
-//            if (true) {
-                Log.wtf("DATA", "A: " + lastAccTime + ", G: " + lastGyroTime + ", Diff: " + (lastAccTime - lastGyroTime));
+        if (lastAccData != null) {
+            Log.w("DATA", "" + lastAccData.getTimestamp() + ", " + lastAccData.getX());
 
-                int currRow = (x++) / 20;
-                int currCol = (y++) % 20;
+//            if (Math.abs(lastAccData.getTimestamp() - lastGyroData.getTimestamp()) < 6000000) {
+            accValueText.setText("" + lastAccData.getX() + "\n" + lastAccData.getY() + "\n" + lastAccData.getZ());
+            accData.add(lastAccData);
+            lastAccData = null;
 
-                if (currRow == 10) {
-                    // Do prediction here
-//                    predictMotionAndToast();
+        }
 
-                    float[][][][] copyData = data.clone();
-                    myCSV(copyData);
-//                    generateCsv();
-
-                    Log.w("PREDICTION", "Data filled x:" + x + ", " + y);
-                    x = 0;
-                    y = 0;
-                    return;
-                }
-
-                accValueText.setText("" + lastAccData[0] + "\n" + lastAccData[1] + "\n" + lastAccData[2]);
-                gyroValueText.setText("" + lastGyroData[0] + "\n" + lastGyroData[1] + "\n" + lastGyroData[2]);
-
-                data[0][currRow][currCol][0] = lastAccData[0];
-                data[0][currRow][currCol][1] = lastAccData[1];
-                data[0][currRow][currCol][2] = lastAccData[2];
-
-                data[0][currRow + 10][currCol][0] = lastGyroData[0];
-                data[0][currRow + 10][currCol][1] = lastGyroData[1];
-                data[0][currRow + 10][currCol][2] = lastGyroData[2];
-
-                lastAccData[0] = Integer.MAX_VALUE;
-                lastGyroData[0] = Integer.MAX_VALUE;
-            }
+        if (lastGyroData != null) {
+            gyroValueText.setText("" + lastGyroData.getX() + "\n" + lastGyroData.getY() + "\n" + lastGyroData.getZ());
+            gyroData.add(lastGyroData);
+            lastGyroData = null;
         }
     }
 
     private float[][] dataToWrite = new float[20][1200];
     private int dataPos = 0;
 
-    @SuppressWarnings("PointlessArithmeticExpression")
-    private void myCSV(float[][][][] copyData) {
-        float[] single = new float[1200];
-
-        int locX = 0;
-        int locY = 0;
-
-        for (int i = 0; i < 600; i += 3) {
-            int currRow = (locX++) / 20;
-            int currCol = (locY++) % 20;
-
-            // Acc data
-            single[i + 0] = copyData[0][currRow][currCol][0];
-            single[i + 1] = copyData[0][currRow][currCol][1];
-            single[i + 2] = copyData[0][currRow][currCol][2];
-
-            // Gyro data
-            single[i + 600 + 0] = copyData[0][currRow + 10][currCol][0];
-            single[i + 600 + 1] = copyData[0][currRow + 10][currCol][1];
-            single[i + 600 + 2] = copyData[0][currRow + 10][currCol][2];
-
-        }
-
-        dataToWrite[dataPos++] = single;
-        generateCSV();
-
-    }
-
     private void generateCSV() {
-        remText.setText("" + dataPos + "/20");
-        if (dataPos == 20) {
-            Toast.makeText(mActivity, "CSV Generated", Toast.LENGTH_SHORT).show();
-            collectData = false;
-            setBtnVis(true, false, false);
-            data = new float[1][20][20][3];
+//        remText.setText("" + dataPos + "/20");
+        Toast.makeText(mActivity, "CSV Generated", Toast.LENGTH_SHORT).show();
+        setBtnVis(true, false, false);
 
-            dataPos = 0;
+        StringBuilder sbAcc = new StringBuilder();
+        sbAcc.append("timestamp,formattedTime,accX,accY,accZ\n");
 
-            float[][] currDataToWrite = dataToWrite.clone();
-
-            StringBuilder sb = new StringBuilder();
-
-            for (int i = 0; i < 1201; i++) {
-                if (i == 0)
-                    sb.append("label,");
-                else {
-                    sb.append(i);
-                    if (i != 1200)
-                        sb.append(",");
-                }
-            }
-            sb.append("\n");
-
-            for (int i = 0; i < 20; i++) {
-                sb.append("1,");
-                for (int j = 0; j < 1200; j++) {
-                    sb.append(currDataToWrite[i][j]);
-                    if (j != 1199) {
-                        sb.append(",");
-                    }
-                }
-                sb.append("\n");
-            }
-
-            // TODO Uncomment this to generate file
-//            writeToFile(sb.toString(), "timestamp_corrected" + System.currentTimeMillis() + ".csv");
+        for (SensorData sensorData : accData) {
+            sbAcc.append(sensorData.getTimestamp()).append(",");
+            sbAcc.append(sensorData.getFormattedTime()).append(",");
+            sbAcc.append(sensorData.getX()).append(",");
+            sbAcc.append(sensorData.getY()).append(",");
+            sbAcc.append(sensorData.getZ()).append("\n");
         }
+
+        StringBuilder sbGyro = new StringBuilder();
+        sbGyro.append("timestamp,formattedTime,gyroX,gyroY,gyroZ\n");
+
+        for (SensorData sensorData : gyroData) {
+            sbGyro.append(sensorData.getTimestamp()).append(",");
+            sbGyro.append(sensorData.getFormattedTime()).append(",");
+            sbGyro.append(sensorData.getX()).append(",");
+            sbGyro.append(sensorData.getY()).append(",");
+            sbGyro.append(sensorData.getZ()).append("\n");
+        }
+
+        // TODO Uncomment this to generate file
+        writeToFile(sbAcc.toString(), "Acc_Data_" + System.currentTimeMillis() + ".csv");
+        writeToFile(sbGyro.toString(), "Gyro_Data_" + System.currentTimeMillis() + ".csv");
+
     }
-
-
-//    private void generateCsv() {
-//
-//        StringBuilder csvOut = new StringBuilder();
-//
-//        csvOut.append("label,");
-//        for (int i = 1; i <= 1200; i++) {
-//            csvOut.append(i);
-//            if (i != 1200)
-//                csvOut.append(",");
-//        }
-//        int count = 0;
-//        for (int i = 1; i <= 30; i++) {
-//            csvOut.append("\n");
-//            csvOut.append("1,");
-//            for (int j = 0; j < 1200; j++) {
-//                csvOut.append(data[count][j]);
-//                if (j != 1199) {
-//                    csvOut.append(",");
-//                }
-//            }
-//            count++;
-//        }
-//
-//
-//        writeToFile(csvOut.toString(), "1_running_data" + System.currentTimeMillis() + ".csv");
-//
-//
-//    }
 
     public void writeToFile(String data, String fileName) {
         // Get the directory for the user's public pictures directory.
 //        final File path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-        final File path = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+//        final File path = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        final File path = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
 
 //        // Make sure the path directory exists.
 //        if(!path.exists())
